@@ -1,0 +1,16 @@
+{
+  "name": "strategy-desk",
+  "version": "1.0.0",
+  "description": "Strategy Desk - live portfolio of backtested strategies, backed by Postgres",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.5"
+  }
+}
