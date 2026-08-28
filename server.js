@@ -16,7 +16,17 @@ const pool = new Pool({
 app.get('/', async (req, res) => {
   try {
     const { rows: strategies } = await pool.query('SELECT * FROM strategies ORDER BY created_at DESC');
-    const { rows: notes } = await pool.query('SELECT * FROM notes ORDER BY created_at DESC');
+
+    // notes table may not exist yet (created lazily by seed_note.js) — don't let that break the hub page
+    let notes = [];
+    try {
+      const result = await pool.query('SELECT * FROM notes ORDER BY created_at DESC');
+      notes = result.rows;
+    } catch (notesErr) {
+      if (notesErr.code !== '42P01') throw notesErr; // 42P01 = undefined_table; anything else is a real error
+      console.warn('notes table not found yet — showing hub with 0 research notes');
+    }
+
     res.send(hubPage(strategies, notes));
   } catch (err) {
     console.error(err);
@@ -45,6 +55,9 @@ app.get('/notes/:slug', async (req, res) => {
     }
     res.send(notePage(rows[0]));
   } catch (err) {
+    if (err.code === '42P01') {
+      return res.status(404).send(layout('Not found', '', '<div class="page"><p>Note not found.</p></div>'));
+    }
     console.error(err);
     res.status(500).send('Database error: ' + err.message);
   }
