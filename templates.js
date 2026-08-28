@@ -99,6 +99,7 @@ const STYLE = `
     font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
   }
   .summary-strip .value.pos { color: var(--long); }
+  .summary-strip .value.neg { color: var(--short); }
   .summary-strip .label {
     font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.7rem; letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--ink-faint); margin-top: 0.3rem;
@@ -139,6 +140,7 @@ const STYLE = `
   .card .mini-stats { display: flex; gap: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--line); font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
   .card .mini-stats .mv { font-weight: 600; font-size: 1rem; display: block; }
   .card .mini-stats .mv.pos { color: var(--long); }
+  .card .mini-stats .mv.neg { color: var(--short); }
   .card .mini-stats .ml { font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.64rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.15rem; }
   .card .go { margin-top: 1rem; font-family: 'IBM Plex Sans Condensed', sans-serif; font-weight: 600; font-size: 0.8rem; color: var(--accent); display: flex; align-items: center; gap: 0.35em; }
   .card .go svg { width: 0.9em; height: 0.9em; transition: transform 0.15s ease; }
@@ -166,6 +168,44 @@ const STYLE = `
   footer { margin-top: 3.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.8rem; color: var(--ink-faint); letter-spacing: 0.02em; }
 
   @media (prefers-reduced-motion: reduce) { .card { transition: none; } }
+
+  /* ---- research notes: extends the same tokens, no P&L assumed ---- */
+  .card.note .kind { color: var(--ink-faint); }
+  .card.note .mini-stats .mv { color: var(--ink); }
+
+  .note-table-wrap { overflow-x: auto; margin: 1.1rem 0 1.4rem; }
+  table.note-table { border-collapse: collapse; width: 100%; font-size: 0.88rem; min-width: 380px; }
+  table.note-table th, table.note-table td { text-align: left; padding: 0.5rem 0.85rem; border-bottom: 1px solid var(--line); font-family: 'IBM Plex Sans Condensed', sans-serif; }
+  table.note-table th { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+  table.note-table td.num, table.note-table th.num { font-family: 'IBM Plex Mono', monospace; text-align: right; font-variant-numeric: tabular-nums; }
+  table.note-table tr:last-child td { border-bottom: none; }
+
+  .callout { background: var(--mono-bg); border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0; padding: 1rem 1.25rem; margin: 1.1rem 0 1.4rem; font-size: 0.95rem; }
+  .callout b { color: var(--accent); }
+
+  .chart-box { border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); padding: 1.25rem 1.25rem 1rem; margin: 1.1rem 0 1.4rem; }
+  .chart-box .ct { font-family: 'IBM Plex Sans Condensed', sans-serif; font-weight: 600; font-size: 0.8rem; color: var(--ink-soft); margin: 0 0 0.2rem; }
+  .chart-box .cs { font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.72rem; color: var(--ink-faint); margin: 0 0 0.9rem; }
+  .chart-box svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .chart-box .axl { font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; fill: var(--ink-faint); }
+  .chart-box .gl { stroke: var(--line); stroke-width: 1; }
+
+  .bar-row { margin: 0.9rem 0; }
+  .bar-row .rh { display: flex; justify-content: space-between; font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.82rem; margin-bottom: 0.35rem; }
+  .bar-row .rh .n { color: var(--ink-faint); font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; }
+  .bar-track { display: flex; height: 24px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .bar-seg { display: flex; align-items: center; justify-content: center; font-family: 'IBM Plex Mono', monospace; font-size: 0.68rem; color: #fff; }
+  .seg-short { background: var(--short); }
+  .seg-long { background: var(--long); }
+  .seg-amb { background: var(--ink-faint); }
+  .chart-legend { display: flex; gap: 1.1rem; flex-wrap: wrap; margin-top: 0.85rem; font-family: 'IBM Plex Sans Condensed', sans-serif; font-size: 0.75rem; color: var(--ink-soft); }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 0.4em; }
+  .chart-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  ul.caveats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.85rem; }
+  ul.caveats li { padding-left: 1.3rem; position: relative; font-size: 0.94rem; color: var(--ink-soft); }
+  ul.caveats li::before { content: "\\2014"; position: absolute; left: 0; top: 0; color: var(--ink-faint); }
+  ul.caveats b { color: var(--ink); }
 `;
 
 function layout(title, description, body) {
@@ -205,7 +245,22 @@ function cardHtml(s) {
   </a>`;
 }
 
-function hubPage(strategies) {
+function noteCardHtml(n) {
+  const stats = n.stats || [];
+  const mini = stats.slice(0, 3).map(st => `
+      <div><span class="mv${st.pos ? ' pos' : ''}${st.neg ? ' neg' : ''}">${esc(st.value)}</span><span class="ml">${esc(st.label)}</span></div>`).join('');
+  return `<a class="card note" href="/notes/${encodeURIComponent(n.slug)}">
+    <div class="kind">${esc(n.eyebrow || 'Research note')}</div>
+    <h3>${esc(n.title)}</h3>
+    <p class="desc">${esc(n.subtitle || '')}</p>
+    <div class="mini-stats">${mini}</div>
+    <div class="go">Read the study
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12L12 4M12 4H6M12 4V10"/></svg>
+    </div>
+  </a>`;
+}
+
+function hubPage(strategies, notes = []) {
   const totalNet = strategies.reduce((sum, s) => sum + (s.net_pnl !== null ? Number(s.net_pnl) : 0), 0);
   const bestWinRate = strategies.length ? Math.max(...strategies.map(s => s.win_rate !== null ? Number(s.win_rate) : 0)) : null;
   const totalTrades = strategies.reduce((sum, s) => sum + (s.trades || 0), 0);
@@ -215,6 +270,14 @@ function hubPage(strategies) {
     <div class="kind">Next slot</div>
     <p>Add your next backtested strategy to the database and it appears here automatically.</p>
   </div>`;
+
+  const noteCards = notes.map(noteCardHtml).join('\n');
+  const notesSection = `<section class="roster">
+    <div class="roster-head"><h2>Research</h2><span class="roster-count">${notes.length} listed</span></div>
+    <div class="grid">
+      ${noteCards || '<div class="card empty"><div class="kind">Next slot</div><p>Descriptive studies and market research live here — no P&amp;L required.</p></div>'}
+    </div>
+  </section>`;
 
   const body = `<div class="page">
   <header class="hero">
@@ -238,10 +301,41 @@ function hubPage(strategies) {
     </div>
   </section>
 
+  ${notesSection}
+
   <footer>Strategy Desk — personal backtest reference, served live from Postgres. Figures as supplied by each strategy's backtest; not a performance guarantee.</footer>
 </div>`;
 
   return layout('Strategy Desk', 'Live portfolio of backtested strategies', body);
+}
+
+// ---------------------------------------------------------------
+// note detail page (descriptive research, no trade metrics required)
+// ---------------------------------------------------------------
+
+function notePage(n) {
+  const stats = n.stats || [];
+  const statHtml = stats.map(st => `<div class="stat"><div class="value${st.pos ? ' pos' : ''}${st.neg ? ' neg' : ''}">${esc(st.value)}</div><div class="label">${esc(st.label)}</div></div>`).join('');
+
+  const sections = (n.sections || []).map(s => section(s.num, s.title, s.html)).join('\n');
+
+  const body = `<div class="page">
+  <header class="hero">
+    <div class="eyebrow"><a href="/">&larr; Strategy Desk</a></div>
+    <h1 class="title">${esc(n.title)}</h1>
+    <p class="subtitle">${esc(n.subtitle || '')}</p>
+
+    <div class="summary-strip">
+      ${statHtml}
+    </div>
+  </header>
+
+  ${sections}
+
+  <footer>Strategy Desk — research note, served live from Postgres. Descriptive statistics, not a backtested strategy.</footer>
+</div>`;
+
+  return layout(n.title, n.subtitle || '', body);
 }
 
 // ---------------------------------------------------------------
@@ -341,4 +435,4 @@ function detailPage(s) {
   return layout(s.name, s.description || '', body);
 }
 
-module.exports = { hubPage, detailPage, layout };
+module.exports = { hubPage, detailPage, notePage, layout };
