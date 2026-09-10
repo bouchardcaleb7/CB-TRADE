@@ -1,3 +1,5 @@
 __pycache__/
 backtest/results.json
 backtest/trades.csv
+backtest/sweep_results.csv
+backtest/cache/
