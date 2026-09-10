@@ -33,6 +33,10 @@ The script prints a summary table to stdout and writes:
                       `strategies` Postgres table used by this repo's Strategy Desk app
                       (see backtest/seed_strategies.js).
   - trades.csv     -> every individual simulated trade, for manual verification.
+
+Data is processed one DBN file at a time (each file = one calendar day when the
+batch job was split with split_duration="day"), so memory stays bounded even for
+a full year of NQ trade-tick data across every outright contract month.
 """
 
 from __future__ import annotations
@@ -73,54 +77,53 @@ SCENARIOS = [
 
 
 # ---------------------------------------------------------------------------
-# Data loading
+# Data loading — one DBN file at a time, to keep memory bounded on a full year
+# of tick-by-tick data across every outright NQ contract month.
 # ---------------------------------------------------------------------------
 
-def load_trades(data_dir: str) -> pd.DataFrame:
-    import databento as db
-
+def find_data_files(data_dir: str) -> list[str]:
     files = sorted(glob.glob(os.path.join(data_dir, "**", "*.dbn.zst"), recursive=True))
     files += sorted(glob.glob(os.path.join(data_dir, "**", "*.dbn"), recursive=True))
     if not files:
         raise FileNotFoundError(f"No .dbn/.dbn.zst files found under {data_dir!r}")
+    return files
 
-    print(f"Loading {len(files)} DBN file(s) from {data_dir} ...", file=sys.stderr)
 
-    frames = []
-    for f in files:
-        store = db.DBNStore.from_file(f)
-        df = store.to_df(map_symbols=True)
-        frames.append(df)
-    raw = pd.concat(frames)
-    raw = raw.sort_index()
-    raw = raw.reset_index()
+def load_file_df(path: str, warned: set) -> pd.DataFrame:
+    import databento as db
 
-    ts_col = "ts_event" if "ts_event" in raw.columns else raw.columns[0]
+    store = db.DBNStore.from_file(path)
+    df = store.to_df(map_symbols=True)
+    df = df.reset_index()
 
-    if "symbol" not in raw.columns:
-        raw["symbol"] = raw["instrument_id"].astype(str)
-        print("WARNING: no 'symbol' column from Databento symbology — falling back to raw "
-              "instrument_id. Front-month selection may be unreliable; re-download using "
-              "parent/continuous symbology (e.g. stype_in='parent', symbols=['NQ.FUT']) if this "
-              "looks wrong.", file=sys.stderr)
+    ts_col = "ts_event" if "ts_event" in df.columns else df.columns[0]
+
+    if "symbol" not in df.columns:
+        if "no_symbol" not in warned:
+            print("WARNING: no 'symbol' column from Databento symbology — falling back to raw "
+                  "instrument_id. Front-month selection may be unreliable; re-download using "
+                  "parent/continuous symbology (e.g. stype_in='parent', symbols=['NQ.FUT']) if "
+                  "this looks wrong.", file=sys.stderr)
+            warned.add("no_symbol")
+        df["symbol"] = df["instrument_id"].astype(str)
 
     # Keep only actual trade prints if the schema carries an `action` column
     # (mbp-1 / tbbo / mbo all do; a pure `trades` schema does not).
-    if "action" in raw.columns:
-        raw = raw[raw["action"] == "T"]
+    if "action" in df.columns:
+        df = df[df["action"] == "T"]
 
-    missing = {"price", "size"} - set(raw.columns)
+    missing = {"price", "size"} - set(df.columns)
     if missing:
         raise ValueError(f"Expected 'price'/'size' columns in trade data, missing {missing}. "
-                          f"Got columns: {raw.columns.tolist()}")
+                          f"Got columns: {df.columns.tolist()}")
 
-    raw[ts_col] = pd.to_datetime(raw[ts_col], utc=True).dt.tz_convert(ET)
-    raw = raw.rename(columns={ts_col: "ts_event"})
-    raw["date"] = raw["ts_event"].dt.date
-    raw["price"] = raw["price"].astype(float)
-    raw["size"] = raw["size"].astype(float)
+    df[ts_col] = pd.to_datetime(df[ts_col], utc=True).dt.tz_convert(ET)
+    df = df.rename(columns={ts_col: "ts_event"})
+    df["date"] = df["ts_event"].dt.date
+    df["price"] = df["price"].astype(float)
+    df["size"] = df["size"].astype(float)
 
-    return raw[["ts_event", "date", "symbol", "price", "size"]]
+    return df[["ts_event", "date", "symbol", "price", "size"]]
 
 
 def pick_front_month(df: pd.DataFrame) -> pd.DataFrame:
@@ -225,29 +228,30 @@ def simulate_day(day: pd.DataFrame, orb: dict, entry_end_dt: pd.Timestamp,
     }
 
 
-def run_scenario(df_front: pd.DataFrame, orb_minutes: int, day_filter: str,
-                  buffer_pts: float = TRAIL_BUFFER_PTS) -> list[dict]:
-    allowed_weekdays = DAY_FILTERS[day_filter]
-    trades = []
-    for date, day in df_front.groupby("date"):
-        if pd.Timestamp(date).weekday() not in allowed_weekdays:
-            continue
-        open_dt, close_dt, entry_end_dt = session_bounds(date)
-        day = day[(day["ts_event"] >= open_dt) & (day["ts_event"] <= close_dt)]
-        if day.empty:
-            continue
-        day = day.sort_values("ts_event")
-        day["cum_pv"] = (day["price"] * day["size"]).cumsum()
-        day["cum_vol"] = day["size"].cumsum()
-        day["vwap"] = day["cum_pv"] / day["cum_vol"]
+def process_day_for_scenarios(day: pd.DataFrame, date, scenario_trades: dict, buffer_pts: float):
+    """Run every configured scenario against a single trading day's front-month ticks."""
+    open_dt, close_dt, entry_end_dt = session_bounds(date)
+    day = day[(day["ts_event"] >= open_dt) & (day["ts_event"] <= close_dt)]
+    if day.empty:
+        return
+    day = day.sort_values("ts_event")
+    day["cum_pv"] = (day["price"] * day["size"]).cumsum()
+    day["cum_vol"] = day["size"].cumsum()
+    day["vwap"] = day["cum_pv"] / day["cum_vol"]
 
-        orb = build_orb(day, open_dt, orb_minutes)
+    weekday = pd.Timestamp(date).weekday()
+    orb_cache: dict[int, dict | None] = {}
+    for scn in SCENARIOS:
+        if weekday not in DAY_FILTERS[scn["day_filter"]]:
+            continue
+        if scn["orb_minutes"] not in orb_cache:
+            orb_cache[scn["orb_minutes"]] = build_orb(day, open_dt, scn["orb_minutes"])
+        orb = orb_cache[scn["orb_minutes"]]
         if orb is None:
             continue
         trade = simulate_day(day, orb, entry_end_dt, buffer_pts)
         if trade:
-            trades.append(trade)
-    return trades
+            scenario_trades[scn["key"]].append(trade)
 
 
 # ---------------------------------------------------------------------------
@@ -349,19 +353,31 @@ def main():
     ap.add_argument("--output", default="backtest/results.json", help="Where to write the per-scenario JSON summary")
     ap.add_argument("--trades-csv", default="backtest/trades.csv", help="Where to write the full trade log (all scenarios)")
     ap.add_argument("--buffer", type=float, default=TRAIL_BUFFER_PTS, help="Trailing buffer above VWAP, in points")
+    ap.add_argument("--progress-every", type=int, default=20, help="Print progress every N files")
     args = ap.parse_args()
 
-    raw = load_trades(args.data_dir)
-    front = pick_front_month(raw)
-    front = front.reset_index(drop=True)
+    files = find_data_files(args.data_dir)
+    print(f"Found {len(files)} DBN file(s) under {args.data_dir}", file=sys.stderr)
 
-    print(f"{len(front):,} trade ticks across {front['date'].nunique()} trading days after front-month filter.",
-          file=sys.stderr)
+    scenario_trades: dict[str, list[dict]] = {scn["key"]: [] for scn in SCENARIOS}
+    warned: set = set()
+    days_seen = 0
+
+    for i, path in enumerate(files, start=1):
+        df = load_file_df(path, warned)
+        if df.empty:
+            continue
+        df = pick_front_month(df)
+        for date, day in df.groupby("date"):
+            days_seen += 1
+            process_day_for_scenarios(day, date, scenario_trades, args.buffer)
+        if i % args.progress_every == 0 or i == len(files):
+            print(f"  processed {i}/{len(files)} files ({days_seen} trading days so far)", file=sys.stderr)
 
     results = []
     all_trades_rows = []
     for scn in SCENARIOS:
-        trades = run_scenario(front, scn["orb_minutes"], scn["day_filter"], args.buffer)
+        trades = scenario_trades[scn["key"]]
         for t in trades:
             all_trades_rows.append({"scenario": scn["key"], **t})
         row = scenario_to_strategy_row(scn, trades)
