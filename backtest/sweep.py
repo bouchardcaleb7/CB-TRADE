@@ -83,7 +83,14 @@ def load_cache(cache_dir: str) -> dict[ddate, dict[str, np.ndarray]]:
 
 def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
                   orb_minutes: int, buffer_pts: float, freeze_minutes: float,
-                  entry_end_min: float, min_orb_range_pts: float):
+                  entry_end_min: float, min_orb_range_pts: float,
+                  entry_style: str = "limit_retest"):
+    """entry_style:
+      - "limit_retest": original spec — resting sell LIMIT at the ORB low, fills
+        when price rises back UP to that level (a bounce/retest short).
+      - "breakout": sell when price BREAKS BELOW the ORB low (momentum
+        continuation short) — fills on the first print at or under the low.
+    """
     orb_end_sec = orb_minutes * 60
     orb_mask = sec < orb_end_sec
     if not orb_mask.any():
@@ -97,7 +104,7 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
     if (h - l) < min_orb_range_pts:
         return None
 
-    limit_price = l
+    trigger_price = l
     initial_stop = h
 
     entry_end_sec = entry_end_min * 60
@@ -106,12 +113,12 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
         return None
     win_sec = sec[window_mask]
     win_price = price[window_mask]
-    fillable = win_price >= limit_price
+    fillable = win_price >= trigger_price if entry_style == "limit_retest" else win_price <= trigger_price
     if not fillable.any():
         return None
     entry_i = np.argmax(fillable)
     entry_sec = win_sec[entry_i]
-    entry_price = limit_price
+    entry_price = trigger_price
 
     after_mask = sec >= entry_sec
     sub_sec = sec[after_mask]
@@ -137,7 +144,7 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
 
 def run_backtest(days: dict, orb_minutes: int, buffer_pts: float, freeze_minutes: float,
                   entry_end_min: float, min_orb_range_pts: float, day_filter: str,
-                  date_subset: set | None = None) -> dict:
+                  entry_style: str = "limit_retest", date_subset: set | None = None) -> dict:
     allowed_weekdays = DAY_FILTERS[day_filter]
     pnls = []
     for date, d in days.items():
@@ -146,7 +153,7 @@ def run_backtest(days: dict, orb_minutes: int, buffer_pts: float, freeze_minutes
         if d["weekday"] not in allowed_weekdays:
             continue
         res = simulate_day(d["sec"], d["price"], d["vwap"], orb_minutes, buffer_pts,
-                            freeze_minutes, entry_end_min, min_orb_range_pts)
+                            freeze_minutes, entry_end_min, min_orb_range_pts, entry_style)
         if res is not None:
             pnls.append(res[0])
 
