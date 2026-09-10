@@ -84,12 +84,16 @@ def load_cache(cache_dir: str) -> dict[ddate, dict[str, np.ndarray]]:
 def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
                   orb_minutes: int, buffer_pts: float, freeze_minutes: float,
                   entry_end_min: float, min_orb_range_pts: float,
-                  entry_style: str = "limit_retest"):
-    """entry_style:
-      - "limit_retest": original spec — resting sell LIMIT at the ORB low, fills
-        when price rises back UP to that level (a bounce/retest short).
-      - "breakout": sell when price BREAKS BELOW the ORB low (momentum
-        continuation short) — fills on the first print at or under the low.
+                  entry_style: str = "limit_retest", side: str = "short"):
+    """entry_style (mirrored for side="long"):
+      - "limit_retest": original spec — resting LIMIT at the ORB extreme, fills
+        on a pullback retest of that level (short: low, retested from below;
+        long: high, retested from above).
+      - "breakout": trade when price BREAKS THROUGH the ORB extreme (momentum
+        continuation) — short below the low, long above the high.
+    side="long" mirrors every short rule: signal is a bullish candle closing
+    above VWAP, initial stop is the ORB low, and the trailing stop follows
+    VWAP - buffer, ratcheting UP only (never loosens down).
     """
     orb_end_sec = orb_minutes * 60
     orb_mask = sec < orb_end_sec
@@ -99,13 +103,17 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
     o, h, l, c = orb_price[0], orb_price.max(), orb_price.min(), orb_price[-1]
     vwap_at_close = vwap[orb_mask][-1]
 
-    if not (c < o and c < vwap_at_close):
-        return None
     if (h - l) < min_orb_range_pts:
         return None
 
-    trigger_price = l
-    initial_stop = h
+    if side == "short":
+        if not (c < o and c < vwap_at_close):
+            return None
+        trigger_price, initial_stop = l, h
+    else:
+        if not (c > o and c > vwap_at_close):
+            return None
+        trigger_price, initial_stop = h, l
 
     entry_end_sec = entry_end_min * 60
     window_mask = (sec >= orb_end_sec) & (sec <= entry_end_sec)
@@ -113,7 +121,10 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
         return None
     win_sec = sec[window_mask]
     win_price = price[window_mask]
-    fillable = win_price >= trigger_price if entry_style == "limit_retest" else win_price <= trigger_price
+    if side == "short":
+        fillable = win_price >= trigger_price if entry_style == "limit_retest" else win_price <= trigger_price
+    else:
+        fillable = win_price <= trigger_price if entry_style == "limit_retest" else win_price >= trigger_price
     if not fillable.any():
         return None
     entry_i = np.argmax(fillable)
@@ -126,10 +137,15 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
     sub_vwap = vwap[after_mask]
 
     freeze_until_sec = entry_sec + freeze_minutes * 60
-    stop_candidate = np.where(sub_sec < freeze_until_sec, initial_stop, sub_vwap + buffer_pts)
-    running_stop = np.minimum.accumulate(np.minimum(initial_stop, stop_candidate))
+    if side == "short":
+        stop_candidate = np.where(sub_sec < freeze_until_sec, initial_stop, sub_vwap + buffer_pts)
+        running_stop = np.minimum.accumulate(np.minimum(initial_stop, stop_candidate))
+        hit = sub_price >= running_stop
+    else:
+        stop_candidate = np.where(sub_sec < freeze_until_sec, initial_stop, sub_vwap - buffer_pts)
+        running_stop = np.maximum.accumulate(np.maximum(initial_stop, stop_candidate))
+        hit = sub_price <= running_stop
 
-    hit = sub_price >= running_stop
     if hit.any():
         exit_i = np.argmax(hit)
         exit_price = running_stop[exit_i]
@@ -138,13 +154,14 @@ def simulate_day(sec: np.ndarray, price: np.ndarray, vwap: np.ndarray,
         exit_price = sub_price[-1]
         exit_reason = "session_close"
 
-    pnl_dollars = (entry_price - exit_price) * MULTIPLIER
-    return pnl_dollars, exit_reason
+    pnl_dollars = (entry_price - exit_price) * MULTIPLIER if side == "short" else (exit_price - entry_price) * MULTIPLIER
+    return pnl_dollars, exit_reason, entry_price, initial_stop
 
 
 def run_backtest(days: dict, orb_minutes: int, buffer_pts: float, freeze_minutes: float,
                   entry_end_min: float, min_orb_range_pts: float, day_filter: str,
-                  entry_style: str = "limit_retest", date_subset: set | None = None) -> dict:
+                  entry_style: str = "limit_retest", side: str = "short",
+                  date_subset: set | None = None) -> dict:
     allowed_weekdays = DAY_FILTERS[day_filter]
     pnls = []
     for date, d in days.items():
@@ -153,7 +170,7 @@ def run_backtest(days: dict, orb_minutes: int, buffer_pts: float, freeze_minutes
         if d["weekday"] not in allowed_weekdays:
             continue
         res = simulate_day(d["sec"], d["price"], d["vwap"], orb_minutes, buffer_pts,
-                            freeze_minutes, entry_end_min, min_orb_range_pts, entry_style)
+                            freeze_minutes, entry_end_min, min_orb_range_pts, entry_style, side)
         if res is not None:
             pnls.append(res[0])
 
