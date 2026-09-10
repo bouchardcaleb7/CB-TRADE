@@ -9,7 +9,7 @@ Strategy (see backtest/README notes at the bottom of this file for the full rule
   - Signal: ORB candle must close bearish (close < open) AND close below the VWAP
     value at the end of the ORB candle. Otherwise no trade that day.
   - Entry: resting sell LIMIT at the ORB candle's low, live from the end of the ORB
-    candle until 11:00 ET. If never touched, the order is cancelled (no trade).
+    candle until 12:00 ET. If never touched, the order is cancelled (no trade).
   - Initial stop: the ORB candle's high.
   - From the moment of entry, the stop trails VWAP + buffer (buffer = 10 points,
     already optimized via a 5/10/20/30/40/50 sweep upstream). The stop only ever
@@ -53,7 +53,7 @@ MULTIPLIER = 20.0  # $ per point, NQ
 
 SESSION_OPEN = dtime(9, 30)
 SESSION_CLOSE = dtime(16, 0)
-ENTRY_WINDOW_END = dtime(11, 0)
+ENTRY_WINDOW_END = dtime(12, 0)
 TRAIL_BUFFER_PTS = 10.0
 
 # Python weekday(): Mon=0 ... Sun=6
