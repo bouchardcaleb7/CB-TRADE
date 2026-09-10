@@ -5,21 +5,31 @@ Short-only ORB + VWAP + trailing-stop backtest for NQ (Databento GLBX.MDP3 tick 
 Strategy (see backtest/README notes at the bottom of this file for the full rule text):
   - Instrument: NQ, front-month dominant contract per day, $20/point multiplier.
   - VWAP computed in-session from 09:30 ET, cumulative tick-by-tick, reset every day.
-  - ORB candle = first N minutes of the session (N = 5 / 15 / 30, configurable).
+  - ORB candle = first N minutes of the session (N configurable per scenario).
   - Signal: ORB candle must close bearish (close < open) AND close below the VWAP
     value at the end of the ORB candle. Otherwise no trade that day.
-  - Entry: resting sell LIMIT at the ORB candle's low, live from the end of the ORB
-    candle until 12:00 ET. If never touched, the order is cancelled (no trade).
+  - Entry, two styles (see entry_style per scenario):
+      * "limit_retest" (original spec): resting sell LIMIT at the ORB candle's low,
+        fills if price rises back UP to retest that level. Live from the end of the
+        ORB candle until 12:00 ET; if never touched, cancelled (no trade).
+      * "breakout": sell when price BREAKS BELOW the ORB low (momentum continuation),
+        same live window. Found via parameter sweep (backtest/sweep.py) to be far
+        more robust than the retest style, which collapsed out-of-sample under every
+        buffer/day-filter combination tried.
   - Initial stop: the ORB candle's high.
-  - From the moment of entry, the stop trails VWAP + buffer (buffer = 10 points,
-    already optimized via a 5/10/20/30/40/50 sweep upstream). The stop only ever
-    ratchets tighter (down) — it never loosens even if VWAP moves back up.
+  - From the moment of entry, the stop trails VWAP + buffer (buffer in points, tuned
+    per scenario). The stop only ever ratchets tighter (down) — it never loosens
+    even if VWAP moves back up.
   - Exit: trailing stop touched, or forced flat at 16:00 ET at the last traded price.
     No take-profit.
-  - Day filter and ORB length are both configurable per scenario (see SCENARIOS below):
-      * baseline   : 5-minute ORB,  Mon/Tue/Thu only  (original spec)
-      * every_15m  : 15-minute ORB, every weekday     (requested change)
-      * every_30m  : 30-minute ORB, every weekday     (requested change)
+  - Day filter, ORB length, buffer, and entry style are all configurable per scenario
+    (see SCENARIOS below):
+      * baseline           : 5min ORB,  Mon/Tue/Thu, limit_retest, buffer 10pt (original spec)
+      * every_15m_all_days  : 15min ORB, every weekday, limit_retest, buffer 10pt (requested change)
+      * every_30m_all_days  : 30min ORB, every weekday, limit_retest, buffer 10pt (requested change)
+      * improved_breakout   : 10min ORB, every weekday, breakout entry, buffer 40pt —
+        the only variant that held up in-sample AND out-of-sample across a wide
+        parameter neighborhood; see backtest/sweep.py for the full search.
     Each day only ever produces at most one signal/trade, so "one trade per day" is
     already the natural behavior of this engine — no separate flag needed for that.
 
@@ -68,11 +78,17 @@ DAY_FILTERS = {
 
 SCENARIOS = [
     {"key": "baseline_5m_mtt", "orb_minutes": 5, "day_filter": "mon_tue_thu",
+     "buffer_pts": 10.0, "entry_style": "limit_retest",
      "label": "Short ORB 5min + VWAP + Trail 10pts (Lun/Mar/Jeu)"},
     {"key": "every_15m_all_days", "orb_minutes": 15, "day_filter": "all",
+     "buffer_pts": 10.0, "entry_style": "limit_retest",
      "label": "Short ORB 15min + VWAP + Trail 10pts (tous les jours)"},
     {"key": "every_30m_all_days", "orb_minutes": 30, "day_filter": "all",
+     "buffer_pts": 10.0, "entry_style": "limit_retest",
      "label": "Short ORB 30min + VWAP + Trail 10pts (tous les jours)"},
+    {"key": "improved_breakout_10m_all_days", "orb_minutes": 10, "day_filter": "all",
+     "buffer_pts": 40.0, "entry_style": "breakout",
+     "label": "Short ORB 10min BREAKOUT + VWAP + Trail 40pts (tous les jours) — optimise"},
 ]
 
 
@@ -176,21 +192,24 @@ def build_orb(day: pd.DataFrame, open_dt: pd.Timestamp, orb_minutes: int):
 
 
 def simulate_day(day: pd.DataFrame, orb: dict, entry_end_dt: pd.Timestamp,
-                  buffer_pts: float = TRAIL_BUFFER_PTS):
+                  buffer_pts: float = TRAIL_BUFFER_PTS, entry_style: str = "limit_retest"):
     if not (orb["close"] < orb["open"] and orb["close"] < orb["vwap_at_close"]):
         return None  # not bearish-and-below-VWAP -> no signal
 
-    limit_price = orb["low"]
+    trigger_price = orb["low"]
     initial_stop = orb["high"]
 
     window = day[(day["ts_event"] >= orb["end_time"]) & (day["ts_event"] <= entry_end_dt)]
-    fillable = window[window["price"] >= limit_price]
+    if entry_style == "breakout":
+        fillable = window[window["price"] <= trigger_price]
+    else:
+        fillable = window[window["price"] >= trigger_price]
     if fillable.empty:
-        return None  # resting sell limit never touched -> cancelled
+        return None  # order never touched -> cancelled
 
     entry_row = fillable.iloc[0]
     entry_time = entry_row["ts_event"]
-    entry_price = limit_price
+    entry_price = trigger_price
 
     sub = day[day["ts_event"] >= entry_time].copy()
     sub["stop_candidate"] = sub["vwap"] + buffer_pts
@@ -228,7 +247,7 @@ def simulate_day(day: pd.DataFrame, orb: dict, entry_end_dt: pd.Timestamp,
     }
 
 
-def process_day_for_scenarios(day: pd.DataFrame, date, scenario_trades: dict, buffer_pts: float):
+def process_day_for_scenarios(day: pd.DataFrame, date, scenario_trades: dict):
     """Run every configured scenario against a single trading day's front-month ticks."""
     open_dt, close_dt, entry_end_dt = session_bounds(date)
     day = day[(day["ts_event"] >= open_dt) & (day["ts_event"] <= close_dt)]
@@ -249,7 +268,7 @@ def process_day_for_scenarios(day: pd.DataFrame, date, scenario_trades: dict, bu
         orb = orb_cache[scn["orb_minutes"]]
         if orb is None:
             continue
-        trade = simulate_day(day, orb, entry_end_dt, buffer_pts)
+        trade = simulate_day(day, orb, entry_end_dt, scn["buffer_pts"], scn["entry_style"])
         if trade:
             scenario_trades[scn["key"]].append(trade)
 
@@ -275,9 +294,24 @@ def summarize(trades: list[dict]) -> dict:
     }
 
 
-def build_rules(orb_minutes: int, day_filter: str) -> dict:
+def build_rules(orb_minutes: int, day_filter: str, buffer_pts: float, entry_style: str) -> dict:
     days_txt = {"mon_tue_thu": "lundi, mardi, jeudi uniquement",
                 "all": "tous les jours de semaine (lundi a vendredi), un trade par jour"}[day_filter]
+    if entry_style == "breakout":
+        entry_short = (
+            f"Bougie {orb_minutes}min baissiere (close < open) ET close < VWAP a la cloture de la "
+            "bougie -> vente a la cassure confirmee sous le low de la bougie (entree momentum, pas "
+            f"un ordre limite), active de la fin de la bougie jusqu'a {ENTRY_WINDOW_END.strftime('%Hh%M')}."
+        )
+        entry_price_txt = "Low de la bougie d'ouverture (fill au niveau de cassure, sans slippage modelise)"
+    else:
+        entry_short = (
+            f"Bougie {orb_minutes}min baissiere (close < open) ET close < VWAP a la cloture de la "
+            "bougie -> ordre limite de vente au plus bas (low) de la bougie, actif de la fin de "
+            f"la bougie jusqu'a {ENTRY_WINDOW_END.strftime('%Hh%M')}."
+        )
+        entry_price_txt = "Low de la bougie d'ouverture (fill limite, sans slippage modelise)"
+
     return {
         "vwap": {
             "definition": (
@@ -291,16 +325,12 @@ def build_rules(orb_minutes: int, day_filter: str) -> dict:
                 f"Jours tradés : {days_txt}. Short uniquement (longs exclus). On attend la cloture "
                 f"de la premiere bougie de {orb_minutes} minutes."
             ),
-            "short": (
-                f"Bougie {orb_minutes}min baissiere (close < open) ET close < VWAP a la cloture de la "
-                "bougie -> ordre limite de vente au plus bas (low) de la bougie, actif de la fin de "
-                f"la bougie jusqu'a {ENTRY_WINDOW_END.strftime('%Hh%M')}."
-            ),
+            "short": entry_short,
             "no_trade": (
-                f"Si l'ordre limite n'est jamais touche avant {ENTRY_WINDOW_END.strftime('%Hh%M')}, "
+                f"Si l'ordre n'est jamais touche avant {ENTRY_WINDOW_END.strftime('%Hh%M')}, "
                 "il est annule -> pas de trade ce jour-la."
             ),
-            "entry_price": "Low de la bougie d'ouverture (fill limite, sans slippage modelise)",
+            "entry_price": entry_price_txt,
         },
         "initial_stop": {
             "method": "Stop initial = high de la bougie d'ouverture.",
@@ -311,8 +341,8 @@ def build_rules(orb_minutes: int, day_filter: str) -> dict:
         },
         "stop_management": {
             "on_trigger": (
-                f"Des l'entree, le stop suit le VWAP + {TRAIL_BUFFER_PTS:.0f} points (buffer fixe, "
-                "trouve optimal par sweep 5/10/20/30/40/50)."
+                f"Des l'entree, le stop suit le VWAP + {buffer_pts:.0f} points (buffer fixe, tune par "
+                "sweep de parametres, voir backtest/sweep.py)."
             ),
             "after_trigger": "Le stop ne se resserre que dans le sens favorable (ratchet), jamais l'inverse.",
             "if_never_stopped": (
@@ -321,8 +351,9 @@ def build_rules(orb_minutes: int, day_filter: str) -> dict:
             ),
         },
         "notes": (
-            f"Variante: ORB {orb_minutes} minutes, {days_txt}. Pas de take-profit; sortie uniquement "
-            "sur trailing stop ou cloture de session."
+            f"Variante: ORB {orb_minutes} minutes, {days_txt}, entree "
+            f"{'breakout (cassure confirmee)' if entry_style == 'breakout' else 'limite (retest du low)'}. "
+            "Pas de take-profit; sortie uniquement sur trailing stop ou cloture de session."
         ),
     }
 
@@ -334,12 +365,13 @@ def scenario_to_strategy_row(scn: dict, trades: list[dict]) -> dict:
         "name": scn["label"],
         "category": "ORB + VWAP",
         "description": (
-            f"Short-only opening-range breakout ({scn['orb_minutes']}min) filtre par VWAP, stop "
-            f"initial au high de l'ORB puis trailing VWAP+{TRAIL_BUFFER_PTS:.0f}pts (ratchet). "
+            f"Short-only opening-range {'breakout' if scn['entry_style'] == 'breakout' else 'fade/retest'} "
+            f"({scn['orb_minutes']}min) filtre par VWAP, stop initial au high de l'ORB puis trailing "
+            f"VWAP+{scn['buffer_pts']:.0f}pts (ratchet). "
             f"Jours: {'Lun/Mar/Jeu' if scn['day_filter'] == 'mon_tue_thu' else 'tous les jours'}."
         ),
         **summary,
-        "rules": build_rules(scn["orb_minutes"], scn["day_filter"]),
+        "rules": build_rules(scn["orb_minutes"], scn["day_filter"], scn["buffer_pts"], scn["entry_style"]),
     }
 
 
@@ -352,7 +384,6 @@ def main():
     ap.add_argument("--data-dir", required=True, help="Folder containing the Databento .dbn/.dbn.zst files")
     ap.add_argument("--output", default="backtest/results.json", help="Where to write the per-scenario JSON summary")
     ap.add_argument("--trades-csv", default="backtest/trades.csv", help="Where to write the full trade log (all scenarios)")
-    ap.add_argument("--buffer", type=float, default=TRAIL_BUFFER_PTS, help="Trailing buffer above VWAP, in points")
     ap.add_argument("--progress-every", type=int, default=20, help="Print progress every N files")
     args = ap.parse_args()
 
@@ -370,7 +401,7 @@ def main():
         df = pick_front_month(df)
         for date, day in df.groupby("date"):
             days_seen += 1
-            process_day_for_scenarios(day, date, scenario_trades, args.buffer)
+            process_day_for_scenarios(day, date, scenario_trades)
         if i % args.progress_every == 0 or i == len(files):
             print(f"  processed {i}/{len(files)} files ({days_seen} trading days so far)", file=sys.stderr)
 
