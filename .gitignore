@@ -3,3 +3,4 @@ backtest/results.json
 backtest/trades.csv
 backtest/sweep_results.csv
 backtest/cache/
+node_modules/
