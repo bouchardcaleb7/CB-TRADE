@@ -1,0 +1,42 @@
+[
+  {
+    "slug": "orb-10m-breakout-vwap-trail",
+    "name": "ORB 10min Breakout + VWAP Trail (Short + Long)",
+    "category": "ORB + VWAP",
+    "description": "Cassure confirmee de la bougie d'ouverture 10min, filtree par VWAP, stop initial a l'autre extremite de la bougie puis trailing VWAP +/-40pts (ratchet). Short et long, tous les jours, MNQ avec risque plafonne a $1,000/trade.",
+    "net_pnl": 33706.40,
+    "win_rate": 39.5,
+    "trades": 200,
+    "trades_reaching_breakeven": 200,
+    "avg_win": 1185.36,
+    "avg_loss": -495.35,
+    "rules": {
+      "vwap": {
+        "definition": "VWAP calcule en session, demarre a 9h30 ET, reset chaque jour, cumule tick par tick : VWAP = somme(prix x volume) / somme(volume) depuis l'ouverture."
+      },
+      "entry": {
+        "note": "Tous les jours de semaine (lundi a vendredi), un trade par jour maximum. On attend la cloture de la premiere bougie de 10 minutes (9h30-9h40) ; elle donne un signal short, un signal long, ou rien - jamais les deux a la fois.",
+        "long": "Bougie 10min haussiere (close > open) ET close > VWAP a la cloture de la bougie -> achat des que le prix casse au-dessus du high de la bougie, entre la fin de la bougie et 12h00 ET.",
+        "short": "Bougie 10min baissiere (close < open) ET close < VWAP a la cloture de la bougie -> vente des que le prix casse sous le low de la bougie, entre la fin de la bougie et 12h00 ET.",
+        "no_trade": "Si le niveau (high ou low de la bougie) n'est jamais casse avant 12h00, l'ordre est annule -> pas de trade ce jour-la.",
+        "entry_price": "Low (short) ou high (long) de la bougie d'ouverture 10min - fill au niveau de cassure, sans slippage modelise."
+      },
+      "initial_stop": {
+        "method": "L'autre extremite de la bougie d'ouverture 10min.",
+        "long": "Low de la bougie 10min d'ouverture.",
+        "short": "High de la bougie 10min d'ouverture."
+      },
+      "position_sizing": {
+        "risk_dist": "Micro NQ (MNQ), $2/point. Risque plafonne a $1,000/trade.",
+        "contracts": "contrats = plancher( $1,000 / (|stop_initial - entree| x $2/pt) ) ; si 0, trade saute."
+      },
+      "stop_management": {
+        "freeze": "Aucun gel - le trailing s'active des l'entree.",
+        "on_trigger": "Des l'entree, le stop suit le VWAP +/-40 points (au-dessus pour un short, en-dessous pour un long).",
+        "after_trigger": "Le stop ne se resserre que dans le sens favorable (ratchet), jamais l'inverse.",
+        "if_never_stopped": "Sortie forcee a 16h00 ET (cloture de session), au dernier prix trade."
+      },
+      "notes": "Variante retenue apres recherche de parametres et validation hors-echantillon sur 1 an de tick data NQ (Databento GLBX.MDP3, 11 aout 2025 - 10 aout 2026). Short seul : 106 trades, +$23,749, +$224/trade. Long seul : 94 trades, +$9,957, +$106/trade - valide independamment (positif en-sample et hors-echantillon). Combine : 200 trades, +$33,706, expectancy +$169/trade, max drawdown -$10,895, win rate 39.5%. Aucun slippage ni commission modelises ; echantillon d'un an, a valider en papier-trading avant capital reel."
+    }
+  }
+]
